@@ -1,4 +1,6 @@
-﻿using System;
+﻿using ICSharpCode.SharpZipLib.BZip2;
+using ICSharpCode.SharpZipLib.Core;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -30,123 +32,72 @@ namespace DataExtactionSample
         ConcurrentQueue<string> pagelists = new ConcurrentQueue<string>();
         ConcurrentQueue<DocInfo> docinfos = new ConcurrentQueue<DocInfo>();
         ConcurrentQueue<string> failed = new ConcurrentQueue<string>();
+
+        BufferManager<StringBuilder> sbpool;
+        BufferManager<DocInfo> docpool;
+
         public MainWindow()
         {
             InitializeComponent();
-            // fs = File.OpenRead(@"D:\Users\SoconaL\Desktop\part-m-00000\part-m-00000");
-        }
+            const int bufcnt = 4000;
+            StringBuilder[] sbs = new StringBuilder[bufcnt];
+            DocInfo[] docs = new DocInfo[bufcnt];
+            for (int i = 0; i < bufcnt; i++)
+            {
+                sbs[i] = new StringBuilder(1000);
+                docs[i] = new DocInfo();
+            }
+            sbpool = new BufferManager<StringBuilder>(sbs);
+            docpool = new BufferManager<DocInfo>(docs);
 
+        }
+        bool readEnd = false;
+        bool[] stopmatch = { false, false };
+
+        int cnt = 0;
+        int fullRead = 50;
+        Stopwatch sw = new Stopwatch();
+        Regex regex = new Regex(@"<docno>(?<no>.+)</docno>[.\W]*<url>(?<url>.+)</url>[.\W\w]*?(<title>(?<title>.+)</title>[.\W\w]*?)?(<meta[.\W\w]*""keywords""[.\W\w]*?""(?<key>.+)""\W*?>[.\W\w]*?)?(<meta[.\W\w]*""description""[.\W\w]*?""(?<abs>.+)""\W*>[\W\w]*?)?</head>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private async void Button_Click(object sender, RoutedEventArgs e)
         {
-            Stopwatch sw = new Stopwatch();
-            bool readEnd = false;
-            sw.Start();
-            int cnt = 0; ;
-            Regex regex = new Regex(@"<docno>(?<no>.+)</docno>[.\W]*<url>(?<url>.+)</url>[.\W\w]*?(<title>(?<title>.+)</title>[.\W\w]*?)?(<meta[.\W\w]*""keywords""[.\W\w]*?""(?<key>.+)""\W*?>[.\W\w]*?)?(<meta[.\W\w]*""description""[.\W\w]*?""(?<abs>.+)""\W*>[\W\w]*?)?</head>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            btnGo.IsEnabled = false;
 
-            // Create the memory-mapped file.
-            //using (var fs = File.OpenRead(@"D:\Users\SoconaL\Desktop\part-m-00000\part-m-00000"))
-            //{
-            FileInfo info = new FileInfo(@"D:\Users\SoconaL\Desktop\part-m-00000\part-m-00000");
-            using (MemoryMappedFile mmf = MemoryMappedFile.CreateFromFile(@"D:\Users\SoconaL\Desktop\part-m-00000\part-m-00000", FileMode.Open, "MAXA")) //,info.Length,MemoryMappedFileAccess.Read))
+
+            sw.Start();
+
+
+            using (Stream stream = File.OpenRead(@"D:\SoconaP\Desktop\part-m-00000.bz2"))
             {
-                using (Stream stream = mmf.CreateViewStream())
+                MemoryStream ms = new MemoryStream();
+                StreamUtils.Copy(stream, ms, new byte[2048000]);
+                ms.Seek(0, SeekOrigin.Begin);
+                using (var archive = new BZip2InputStream(ms))
                 {
-                    StreamReader sr = new StreamReader(stream);
-                    Task taskRead = new Task(() =>
+                    StreamReader sr = new StreamReader(archive);
+
+                    Thread taskRead = new Thread(() =>
                     {
                         while (sr.BaseStream.Position < sr.BaseStream.Length)
                         {
                             var str = ReadADoc(sr);
                             pagelists.Enqueue(str);
-                            if (pagelists.Count > 1000)
+                            fullRead += 2;
+                            if (pagelists.Count > 4000)
                             {
-                                Task.Delay(200);
+                                Debug.WriteLine("READ QUEUE FULL!");
+                                fullRead += 10;
+                                Thread.Sleep(500);
                             }
                         }
                         readEnd = true;
                     });
+                    taskRead.Priority = ThreadPriority.AboveNormal;
 
 
+                    Thread taskmatch1;
+                    Thread taskmatch2;
 
-                    Task taskmatch1 = new Task(() =>
-                    {
-                        while (pagelists.Count > 0 || !readEnd)
-                        {
-                            string page;
-                            if (pagelists.TryDequeue(out page))
-                            {
-                                var match = regex.Match(page);
-                                Interlocked.Increment(ref cnt);
-                                if (match.Success)
-                                {
-                                    var docInfo = new DocInfo()
-                                    {
-                                        Id = match.Groups["no"].Value,
-                                        Url = match.Groups["url"].Value,
-                                        Title = match.Groups["title"]?.Value,
-                                        Keywords = match.Groups["key"]?.Value,
-                                        Abstract = match.Groups["abs"]?.Value
-
-                                    };
-                                    docinfos.Enqueue(docInfo);
-                                }
-                                else
-                                {
-                                    failed.Enqueue(page);
-                                }
-                                if (cnt % 20 == 0)
-                                {
-                                    AddInfo($"1-{sw.ElapsedMilliseconds / 1000.0}-{cnt}-\t\t");
-                                }
-                            }
-                            else
-                            {
-                                Task.Delay(100);
-                            }
-                        }
-
-                    });
-                    Task taskmatch2 = new Task(() =>
-                   {
-                       while (pagelists.Count > 0 || !readEnd)
-                       {
-                           string page;
-                           if (pagelists.TryDequeue(out page))
-                           {
-                               var match = regex.Match(page);
-                               Interlocked.Increment(ref cnt);
-                               if (match.Success)
-                               {
-                                   var docInfo = new DocInfo()
-                                   {
-                                       Id = match.Groups["no"].Value,
-                                       Url = match.Groups["url"].Value,
-                                       Title = match.Groups["title"]?.Value,
-                                       Keywords = match.Groups["key"]?.Value,
-                                       Abstract = match.Groups["abs"]?.Value
-
-                                   };
-                                   docinfos.Enqueue(docInfo);
-                               }
-                               else
-                               {
-                                   failed.Enqueue(page);
-                               }
-                               if (cnt % 20 == 0)
-                               {
-                                   AddInfo($"2-{sw.ElapsedMilliseconds / 1000.0}-{cnt}-\t\t");
-                               }
-                           }
-                           else
-                           {
-                               Task.Delay(100);
-                           }
-                       }
-
-                   });
-
-                    Task taskWrite = new Task(() =>
+                    Thread taskWrite = new Thread(() =>
                       {
                           FileStream wfs = new FileStream("output.txt", FileMode.OpenOrCreate, FileAccess.Write);
                           FileStream ewfs = new FileStream("failed.txt", FileMode.OpenOrCreate, FileAccess.Write);
@@ -162,11 +113,12 @@ namespace DataExtactionSample
                               if (docinfos.TryDequeue(out doc))
                               {
                                   string jsonString = javaScriptSerializer.Serialize(doc);
+                                  docpool.CheckIn(doc);
                                   osw.WriteLine(jsonString);
                               }
                               else
                               {
-                                  Task.Delay(100);
+                                  Thread.Sleep(200);
                               }
                           }
                           wfs.Close();
@@ -181,75 +133,190 @@ namespace DataExtactionSample
                               }
                               else
                               {
-                                  Task.Delay(100);
+                                  Thread.Sleep(200);
                               }
                           }
                           wfs.Close();
                           ewfs.Close();
                       });
-                    taskRead.Start();
-                    taskmatch1.Start();
-                    taskmatch2.Start();
-                    taskWrite.Start();
-                    //  var tasks =new Task[] { taskRead, taskmatch1, taskmatch2 };
+                    taskWrite.Priority = ThreadPriority.BelowNormal;
 
-                    await taskRead;
-                    await taskmatch1;
-                    await taskmatch2;
-                    await taskWrite;
+                    Task taskCtrl = new Task(() =>
+                     {
+
+                         taskRead.Start();
+                         Thread.Sleep(3000);
+                         taskWrite.Start();
+                         bool run1 = false, run2 = false;
+                         stopmatch[0] = true;
+                         stopmatch[1] = true;
+                         while (!readEnd)
+                         {
+                             if (fullRead > 400 && stopmatch[0])
+                             {
+                                 stopmatch[0] = false;
+                                 run1 = true;
+
+                                 ThreadPool.UnsafeQueueUserWorkItem(TaskMatchProcedure, 0);
+                                 //taskmatch1 = new Thread(TaskMatchProcedure);
+                                 //taskmatch1.Priority = ThreadPriority.BelowNormal;
+                                 //taskmatch1.Start(0);
+
+                             }
+
+                             if (fullRead > 800 && stopmatch[1])
+                             {
+                                 stopmatch[1] = false;
+                                 run2 = true;
+                                 ThreadPool.UnsafeQueueUserWorkItem(TaskMatchProcedure, 1);
+                                 //taskmatch2 = new Thread(TaskMatchProcedure);
+                                 //taskmatch2.Priority = ThreadPriority.BelowNormal;
+                                 //taskmatch2.Start(1);
+                             }
+                             if (fullRead < 400 && !stopmatch[1] && run2)
+                             {
+                                 //stopmatch[1] = true;
+                                 // run2 = false;
+                                 //Thread.Sleep(200);
+                             }
+                             if (fullRead < 0 && !stopmatch[0] && run1)
+                             {
+                                 //stopmatch[0] = true;
+                                 //run1 = false;
+                                 //  Thread.Sleep(200);
+
+                             }
+                             Thread.Sleep(200);
+                         }
+
+                     });
+
+                    //  var tasks =new Task[] { taskRead, taskmatch1, taskmatch2 };
+                    taskCtrl.Start();
+
+                    await taskCtrl;
+
                     sw.Stop();
 
                 }
             }
-
+            btnGo.IsEnabled = true;
             MessageBox.Show((sw.ElapsedMilliseconds / 1000.0).ToString());
         }
         private void AddInfo(string str)
         {
             this.Dispatcher.InvokeAsync(() =>
             {
-                listResult.AppendText(str);
-                listResult.ScrollToEnd();
+                listResult.Text = (str);
+                //listResult.ScrollToEnd();
             });
             // Console.WriteLine(str);
         }
 
         private string ReadADoc(StreamReader sr)
         {
-            StringBuilder sb = new StringBuilder();
-            int status = 0;
-            string line = sr.ReadLine();
-            while (!line.Contains("<doc>") && sr.BaseStream.Position < sr.BaseStream.Length)
+            StringBuilder sb = sbpool.CheckOut();
+            try
             {
-                line = sr.ReadLine();
-            }
-            if (line.Contains("<doc>"))
-            {
-                status = 1;
-                while (status == 1 && sr.BaseStream.Position < sr.BaseStream.Length)
+                sb.Clear();
+                int status = 0;
+                string line = sr.ReadLine();
+                while (!line.Contains("<doc>") && !sr.EndOfStream)
                 {
-                    if (line.Contains("</head>") || line.Contains("</HEAD>"))
+                    line = sr.ReadLine();
+                }
+                if (line.Contains("<doc>"))
+                {
+                    sb.AppendLine(line);
+                    line = sr.ReadLine();
+                    sb.AppendLine(line);
+                    line = sr.ReadLine();
+                    sb.AppendLine(line);
+                    line = sr.ReadLine();
+                    status = 1;
+                    while (status == 1 && !sr.EndOfStream)
                     {
-                        var idx = line.IndexOf("</head>");
+                        int idx = line.IndexOf("</head>");
                         if (idx < 0) idx = line.IndexOf("</HEAD>");
                         if (idx >= 0)
                         {
                             line = line.Substring(0, idx + 7);
+                            status = 0;
                         }
-                        status = 0;
+                        string[] keywords = new[] { "meta", "title", "</head>" };
+                        foreach (var kw in keywords)
+                        {
+                            if (line.Contains(kw) || line.Contains(kw.ToUpper()))
+                            {
+                                sb.AppendLine(line);
+                                break;
+                            }
+                        }
+                        line = sr.ReadLine();
                     }
-                    sb.AppendLine(line);
-                    line = sr.ReadLine();
-                }
-                if (status == 0)
-                {
-                    return sb.ToString();
+                    if (status == 0)
+                    {
+
+                        return sb.ToString();
+                    }
                 }
             }
-
+            finally
+            {
+                sbpool.CheckIn(sb);
+            }
             return "";
         }
+        private void TaskMatchProcedure(object para)
+        {
+            int id = (int)para;
+            Debug.WriteLine($"{id} - STARTED !");
+            while (!stopmatch[id] && (pagelists.Count > 0 || !readEnd))
+            {
+                string page;
+                if (pagelists.TryDequeue(out page))
+                {
+                    fullRead -= 1;
+                    var match = regex.Match(page);
+                    Interlocked.Increment(ref cnt);
+                    if (match.Success)
+                    {
+                        var docInfo = docpool.CheckOut() ?? new DocInfo();
+
+                        docInfo.Id = match.Groups["no"].Value;
+                        docInfo.Url = match.Groups["url"].Value;
+                        docInfo.Title = match.Groups["title"]?.Value;
+                        docInfo.Keywords = match.Groups["key"]?.Value;
+                        docInfo.Abstract = match.Groups["abs"]?.Value;
+                        docinfos.Enqueue(docInfo);
+                    }
+                    else
+                    {
+                        failed.Enqueue(page);
+                    }
+                    if (cnt % 20 == 0)
+                    {
+                        AddInfo($"{id} - {sw.ElapsedMilliseconds / 1000.0} - {cnt} - \t\t");
+                    }
+                }
+                else
+                {
+                    Debug.WriteLine("READ QUEUE EMPTY!");
+                    fullRead -= 40;
+                    Thread.Sleep(200);
+                }
+            }
+            Debug.WriteLine($"{id} - STOPPED !");
+        }
+
+        private void Window_Closing(Object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            stopmatch[0] = true;
+            stopmatch[1] = true;
+            readEnd = true;
+        }
     }
+
     public class DocInfo
     {
         public string Id { get; set; }

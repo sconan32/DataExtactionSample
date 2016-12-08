@@ -5,9 +5,13 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:DataExtactionSample"
         mc:Ignorable="d"
-        Title="MainWindow" Height="350" Width="525">
+        Title="MainWindow" Height="350" Width="525" Closing="Window_Closing">
     <Grid>
-        <Button Click="Button_Click" Margin="0,0,0,254" ></Button>
-        <TextBox x:Name="listResult" Margin="0,70,0,0" TextWrapping="Wrap"></TextBox>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="64*"/>
+            <RowDefinition Height="255*"/>
+        </Grid.RowDefinitions>
+        <Button x:Name="btnGo" Click="Button_Click" Margin="376,0,0,2" Content="Start" ></Button>
+        <TextBox x:Name="listResult" Margin="0,229,0,0" TextWrapping="Wrap" Grid.Row="1"></TextBox>
     </Grid>
 </Window>
